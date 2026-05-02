@@ -16,28 +16,37 @@ This file tracks what has been built, tested, and proven. Update it as each comp
 ## Phase 1 — Foundation
 
 ### Docker Compose skeleton
-**Status:** NOT STARTED
+**Status:** COMPLETE
 
-Containers: postgres, streamlit, scheduler, worker
-All containers defined, networked, and starting cleanly.
-Postgres healthcheck passing.
-Streamlit accessible at localhost:8501.
+Containers: postgres, streamlit, scheduler, worker — all four defined in `docker-compose.yml`.
+Named volume `postgres_data` used for Postgres persistence (bind mount in `PROJECT_OVERVIEW.md` was an oversight — named volume is canonical).
+`app_network` bridge network connects all containers.
+Postgres healthcheck configured; all three application containers `depends_on: postgres: condition: service_healthy`.
 
 ### Database migrations
-**Status:** NOT STARTED
+**Status:** COMPLETE
 
-Migration 001_init.sql applied.
-All tables from DATA_MODEL.md created.
-All indexes created.
-Schema verified via psql.
+`app/db/migrations/001_init.sql` applied via `docker-entrypoint-initdb.d` on first Postgres start.
+All 14 tables created across four domains: email (3), YouTube (3), eBay (3), research (5).
+All indexes from `DATA_MODEL.md` included. Schema matches spec exactly — no deviations.
 
 ### Streamlit shell
-**Status:** NOT STARTED
+**Status:** COMPLETE
 
-App loads at localhost:8501.
-Five tabs visible: Email assistant, YouTube monitor, eBay inventory, Research — strategy, Research — chatter.
-Each tab shows placeholder text.
-Postgres connection from Streamlit verified.
+`app/streamlit/main.py` loads at localhost:8501.
+Five tabs: Email assistant, YouTube monitor, eBay inventory, Research — strategy, Research — chatter.
+Each tab shows placeholder text indicating which phase delivers its functionality.
+Postgres connection tested on startup; result shown as `st.success` / `st.error` in the sidebar.
+
+### Scheduler stub
+**Status:** COMPLETE
+
+`app/scheduler/scheduler.py` logs "container started" and sleeps. Container starts cleanly; no real jobs until Phase 3.
+
+### Worker stub
+**Status:** COMPLETE
+
+`app/worker/worker.py` logs "container started" and sleeps. Container starts cleanly; real job logic begins in Phase 2.
 
 ---
 
@@ -202,14 +211,12 @@ Chatter tab rendering with links.
 
 ## Discovered constraints and gotchas
 
-*Record anything here that future build sessions need to know — API quirks, schema changes, workarounds, etc.*
-
-(none yet)
+- **Postgres volume:** `PROJECT_OVERVIEW.md` specified a bind mount (`./data/postgres`); `DOCKER_SETUP.md` specified a named volume (`postgres_data`). Named volume is canonical — Docker-managed, safer from accidental deletion. `data/postgres/` is gitignored as belt-and-suspenders but is not the active storage location.
+- **Gmail env var names:** `GMAIL_EBAY_TOKEN_PATH` and `GMAIL_YOUTUBE_TOKEN_PATH` are canonical (from `DOCKER_SETUP.md`), superseding the less-descriptive names in `PROJECT_OVERVIEW.md`.
+- **Doc file locations:** Docs were in the repo root on initial commit; moved to `docs/` in Phase 1 commit to match the repository structure defined in `PROJECT_OVERVIEW.md`.
 
 ---
 
 ## Schema deviations from DATA_MODEL.md
 
-*If any table or column was built differently than documented, record it here.*
-
-(none yet)
+(none — schema matches spec exactly)

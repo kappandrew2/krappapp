@@ -1,0 +1,97 @@
+version: "3.9"
+
+networks:
+  app_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: app_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./app/db/migrations:/docker-entrypoint-initdb.d
+    networks:
+      - app_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  streamlit:
+    build:
+      context: ./app/streamlit
+      dockerfile: Dockerfile
+    container_name: app_streamlit
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=postgres
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - EBAY_IMPORT_FOLDER=/app/imports
+    volumes:
+      - ./data/imports:/app/imports
+      - ./credentials:/app/credentials
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - app_network
+
+  scheduler:
+    build:
+      context: ./app/scheduler
+      dockerfile: Dockerfile
+    container_name: app_scheduler
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - app_network
+
+  worker:
+    build:
+      context: ./app/worker
+      dockerfile: Dockerfile
+    container_name: app_worker
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=postgres
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
+      - TWILIO_FROM_NUMBER=${TWILIO_FROM_NUMBER}
+      - TWILIO_TO_NUMBER=${TWILIO_TO_NUMBER}
+      - YOUTUBE_API_KEY=${YOUTUBE_API_KEY}
+      - EBAY_IMPORT_FOLDER=/app/imports
+    volumes:
+      - ./data/imports:/app/imports
+      - ./credentials:/app/credentials
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - app_network

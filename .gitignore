@@ -1,0 +1,26 @@
+# Secrets — never commit
+.env
+
+# Data volumes and external mounts
+data/postgres/
+data/imports/*
+!data/imports/.gitkeep
+credentials/*
+!credentials/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# Logs
+*.log
+
+# macOS
+.DS_Store
