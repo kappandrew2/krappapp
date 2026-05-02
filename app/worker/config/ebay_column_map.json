@@ -1,0 +1,18 @@
+{
+  "active": {
+    "item_number":        "ebay_item_id",
+    "title":              "title",
+    "current_price":      "price",
+    "start_date":         "listing_date",
+    "end_date":           "end_date",
+    "ebay_category_1_name": "category",
+    "condition":          "condition"
+  },
+  "sold": {
+    "item_number":        "ebay_item_id",
+    "item_title":         "title",
+    "sold_for":           "sold_price",
+    "sale_date":          "sold_date",
+    "quantity":           "sold_quantity"
+  }
+}

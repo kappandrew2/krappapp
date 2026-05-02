@@ -4,3 +4,6 @@ twilio==9.2.3
 google-api-python-client==2.131.0
 google-auth-httplib2==0.2.0
 google-auth-oauthlib==1.2.0
+pandas==2.2.2
+openpyxl==3.1.4
+watchdog==4.0.1

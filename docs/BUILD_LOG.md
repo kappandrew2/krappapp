@@ -52,39 +52,61 @@ Postgres connection tested on startup; result shown as `st.success` / `st.error`
 
 ## Phase 2 — eBay inventory
 
-### File watcher
-**Status:** NOT STARTED
+### Schema migration
+**Status:** COMPLETE
 
-Worker detects new files in ./data/imports/.
-Active vs sold file type detected from filename.
-Load history checked before processing.
+`app/db/migrations/002_add_ebay_fields.sql` adds two columns to `ebay_items`:
+- `sold_quantity INTEGER` — units per sold transaction (from `Quantity` column in sold file)
+- `end_date DATE` — listing expiry date (useful for per-attempt age analysis)
+Apply manually after Phase 1 DB is running: `docker exec -it app_postgres psql -U appuser -d appdb -f /docker-entrypoint-initdb.d/002_add_ebay_fields.sql`
+
+### File watcher
+**Status:** COMPLETE
+
+`app/worker/jobs/ebay_etl_job.py` — `watch_imports_folder()` uses `PollingObserver` (60s poll) to detect new files in `/app/imports`.
+File type detected from filename: must contain `active` or `sold`.
+`scan_existing_files()` runs on worker startup to catch any files dropped while the container was down.
+`_already_loaded()` checks `ebay_load_history` before processing — prevents double-loads.
+2-second sleep after file creation event to allow OS write completion.
 
 ### CSV/Excel ETL
-**Status:** NOT STARTED
+**Status:** COMPLETE
 
-Column mapping config created at app/worker/config/ebay_column_map.json.
-Actual eBay export column names confirmed.
-Validation and normalization working.
-Upsert logic tested: insert new, update existing, sold status transition.
-Age in days calculated correctly.
-Load history recorded.
+Column mapping config: `app/worker/config/ebay_column_map.json` — editable, keyed on normalized column names (lowercase+underscores), separate sections for `active` and `sold` file types.
+Confirmed column names from real eBay exports:
+- Active: `Item number`, `Title`, `Current price`, `Start date`, `End date`, `eBay category 1 name`, `Condition`
+- Sold: `Item Number`, `Item Title`, `Sold For`, `Sale Date`, `Quantity`
+Quirks handled: `skiprows=1` for sold file; `%b-%d-%y` date format for sold dates; `$` stripping for sold prices; all column names normalized before mapping.
+Custom descriptor columns (`CD:*`, `P:*`) and all other unmapped columns stored in `raw_data` JSONB.
+ETL fails with a clear diff message (expected vs. actual columns) if required columns are missing — logs actual columns found on every run.
+Upsert keyed on `ebay_item_id`: `listing_date` and `status` are never overwritten by active-file load; sold-file load sets `status = 'sold'` unconditionally on conflict.
+`xmax = 0` trick used to count inserts vs updates in a single pass.
+
+### Age calculation
+**Status:** COMPLETE
+
+`calculate_ages()` runs after every upsert: `UPDATE ebay_items SET age_in_days = CURRENT_DATE - listing_date WHERE listing_date IS NOT NULL`.
 
 ### Title word extraction
-**Status:** NOT STARTED
+**Status:** COMPLETE
 
-Stop word list defined.
-Word frequency table populated after ETL run.
-Correct counts verified.
+Stop word list: `app/worker/config/stop_words.json` — editable JSON array, seeded with standard English stop words plus audio/eBay noise words.
+`extract_title_words()` tokenizes all titles (active and sold separately), drops words < 3 chars and stop words, upserts counts into `ebay_title_words` for `run_date = today`.
 
 ### Streamlit — eBay tab
-**Status:** NOT STARTED
+**Status:** COMPLETE
 
-Folder link button opens imports folder in Finder.
-Summary bar showing correct counts.
-Grid displaying with all columns.
-Sort by age in days working.
-Filter toggle (All / Active / Sold) working.
-Word frequency chart rendering with date range slider.
+`app/streamlit/tabs/ebay_tab.py` wired into `main.py`.
+Summary bar: 4 metrics (active count, sold last 12 months, long-listed ≥365 days, last loaded timestamp).
+Filter bar: Active / All / Sold radio; title keyword search.
+Main grid: 9 columns, sorted by `age_in_days DESC`, `st.dataframe` with typed column config.
+Word frequency chart: Plotly horizontal bar, top 20 words, Active/Sold/Both toggle, date range slider.
+Single-date guard: when `ebay_title_words` has only one distinct `run_date`, shows an info message instead of a single-point slider.
+All DB reads use `@st.cache_data(ttl=60)` — no in-memory module-level state.
+"Open imports folder" button calls `subprocess.run(["open", folder_path])`.
+
+### Streamlit — eBay tab
+**Status:** COMPLETE — see details above under "Streamlit — eBay tab"
 
 ---
 
@@ -214,9 +236,15 @@ Chatter tab rendering with links.
 - **Postgres volume:** `PROJECT_OVERVIEW.md` specified a bind mount (`./data/postgres`); `DOCKER_SETUP.md` specified a named volume (`postgres_data`). Named volume is canonical — Docker-managed, safer from accidental deletion. `data/postgres/` is gitignored as belt-and-suspenders but is not the active storage location.
 - **Gmail env var names:** `GMAIL_EBAY_TOKEN_PATH` and `GMAIL_YOUTUBE_TOKEN_PATH` are canonical (from `DOCKER_SETUP.md`), superseding the less-descriptive names in `PROJECT_OVERVIEW.md`.
 - **Doc file locations:** Docs were in the repo root on initial commit; moved to `docs/` in Phase 1 commit to match the repository structure defined in `PROJECT_OVERVIEW.md`.
+- **PollingObserver required for watchdog:** inotify-style file events are unreliable across Docker/Mac bind mount boundary. Always use `watchdog.observers.polling.PollingObserver`.
+- **Sold file has blank header row:** `skiprows=1` required when reading `sold_listings.csv` with pandas.
+- **Sold file date format:** `May-01-26` — parse with `strptime` format `%b-%d-%y`. Active file dates are standard and inferred automatically by pandas.
+- **eBay column casing is inconsistent:** `Item number` (active, lowercase n) vs `Item Number` (sold, uppercase N). Normalize ALL column names immediately after read via `re.sub(r"[^a-z0-9]+", "_", col.strip().lower()).strip("_")`.
+- **`002_add_ebay_fields.sql` must be applied manually** to an already-running database: `docker exec -it app_postgres psql -U appuser -d appdb -f /docker-entrypoint-initdb.d/002_add_ebay_fields.sql`. The `docker-entrypoint-initdb.d` hook only runs on first container initialization.
 
 ---
 
 ## Schema deviations from DATA_MODEL.md
 
-(none — schema matches spec exactly)
+- **`ebay_items` gained two columns not in the original spec:** `sold_quantity INTEGER` (units per sold transaction) and `end_date DATE` (listing expiry). Added in `002_add_ebay_fields.sql`.
+- **Stop word list is a config file** (`app/worker/config/stop_words.json`), not a hardcoded constant — keeps it tunable without code changes.

@@ -1,6 +1,7 @@
 import os
 import streamlit as st
 import psycopg2
+from tabs import ebay_tab
 
 st.set_page_config(page_title="eBay / YouTube Assistant", layout="wide")
 
@@ -44,8 +45,7 @@ with tab_youtube:
     st.info("Comment sentiment analysis and offensive comment review queue. Coming in Phase 3.")
 
 with tab_ebay:
-    st.header("eBay inventory")
-    st.info("Inventory ETL, listing age analysis, and word frequency trends. Coming in Phase 2.")
+    ebay_tab.render()
 
 with tab_strategy:
     st.header("Research — strategy")
