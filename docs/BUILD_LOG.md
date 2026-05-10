@@ -108,6 +108,18 @@ All DB reads use `@st.cache_data(ttl=60)` — no in-memory module-level state.
 ### Streamlit — eBay tab
 **Status:** COMPLETE — see details above under "Streamlit — eBay tab"
 
+### Known issues and carry-forward items
+
+**Migration 002 manual apply required** — `app/db/migrations/002_add_ebay_fields.sql` adds `sold_quantity` and `end_date` columns to `ebay_items`. The `docker-entrypoint-initdb.d` mechanism only runs on a fresh empty database. If the database already exists (e.g. after a `docker compose down` without `-v`), this migration must be applied manually:
+```
+docker exec -it app_postgres psql -U appuser -d appdb
+ALTER TABLE ebay_items ADD COLUMN IF NOT EXISTS sold_quantity INTEGER, ADD COLUMN IF NOT EXISTS end_date DATE;
+```
+
+**Date range slider not implemented** — the word frequency chart in the eBay inventory tab renders correctly but the date range slider specified in `UC3_EBAY.md` was not built. Low priority — carry forward to a cleanup pass after all phases are complete.
+
+**Sold items missing listing dates on first load** — sold items that were no longer active at the time of the first export have null `listing_date` and `age_in_days`. This is a timing artifact of the initial load and will self-correct as weekly loads are added over time. No code change required.
+
 ---
 
 ## Phase 3 — YouTube comment monitor
