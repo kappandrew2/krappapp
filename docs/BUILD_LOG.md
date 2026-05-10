@@ -122,46 +122,63 @@ ALTER TABLE ebay_items ADD COLUMN IF NOT EXISTS sold_quantity INTEGER, ADD COLUM
 
 ---
 
-## Phase 3 — YouTube comment monitor
+## Phase 3 — YouTube comment monitor (Pass 1)
 
 ### Scheduler container
-**Status:** NOT STARTED
+**Status:** COMPLETE
 
-APScheduler running in scheduler container.
-Test job fires on schedule and logs output.
-Scheduler survives container restart.
+`app/scheduler/scheduler.py` replaced with real APScheduler (`BlockingScheduler`, UTC timezone).
+YouTube monitor job registered with `IntervalTrigger(hours=6)` and `next_run_time=datetime.utcnow()` — fires immediately on container start, then every 6 hours.
+`app/scheduler/requirements.txt` updated: added `google-api-python-client==2.131.0`, `google-auth==2.29.0`, `anthropic==0.28.0`.
+`docker-compose.yml` updated: scheduler service now receives `ANTHROPIC_API_KEY`, `YOUTUBE_API_KEY`, `YOUTUBE_CHANNEL_ID` env vars.
+`.env.example` updated: added `YOUTUBE_CHANNEL_ID` with instructions.
 
 ### YouTube API connection
-**Status:** NOT STARTED
+**Status:** COMPLETE
 
-API key configured.
-Single video comment fetch working.
-Channel video list fetch working.
+`app/scheduler/jobs/youtube_job.py` — `get_uploads_playlist_id()` uses `channels.list?part=contentDetails&id=CHANNEL_ID` (API key only, no OAuth required).
+Video IDs fetched via `playlistItems.list` on the uploads playlist (50 per page, 1 quota unit/page) — far cheaper than `search.list` (100 units/call).
+Video metadata (title, published_at, view_count, comment_count) fetched via `videos.list` in batches of 50.
+Comments fetched via `commentThreads.list` (100 per page, 1 unit/page).
+1-second delay between all API calls.
+Comments-disabled videos: log and skip — no crash.
+Quota exceeded: raises `QuotaExceededError`, caught in orchestrator — stops fetch loop cleanly.
 
 ### Comment processing job
-**Status:** NOT STARTED
+**Status:** COMPLETE
 
-All channel video IDs fetched.
-New comments deduplicated against Postgres.
-Sentiment classification working.
-Offensive detection working.
-Per-video summaries generated.
-Comments and summaries saved to Postgres.
+`run_youtube_job()` orchestrates the full pipeline in `app/scheduler/jobs/youtube_job.py`:
+1. Fetch all video IDs via uploads playlist
+2. Upsert video metadata (ON CONFLICT UPDATE view/comment counts)
+3. Load known comment IDs from DB for deduplication
+4. Fetch new comments per video; skip known IDs
+5. AI classify in batches of 20 — single Claude call per batch returning `[{comment_id, sentiment, is_offensive, offensive_reason}]`; fallback to `sentiment='unknown'` / `is_offensive=false` on error
+6. Save new comments with `ON CONFLICT DO NOTHING`
+7. Generate per-video Claude summary only for videos with new comments; save to `youtube_video_summaries`
+`app/scheduler/db.py` — DB connection helper for scheduler container.
 
 ### YouTube OAuth (comment deletion)
-**Status:** NOT STARTED
+**Status:** NOT STARTED — deferred to Phase 3 Pass 2
 
 OAuth credential file generated.
 Comment deletion via API tested.
 
 ### Streamlit — YouTube tab
-**Status:** NOT STARTED
+**Status:** COMPLETE (Pass 1)
 
-Video table rendering.
-Sort by view count working.
-Click-through to flagged comments working.
-Remove and Ignore checkboxes functional.
-Filter toggle working.
+`app/streamlit/tabs/youtube_tab.py` wired into `main.py`.
+Summary bar: 3 metrics (total videos, pending flagged comments, last job run from MAX(last_fetched_at)).
+Filter bar: Pending review / Cleared / All — "Pending review" = videos with ≥1 offensive pending comment; "Cleared" = no pending offensive comments; derived UI state, not a DB value.
+Video table: 7 columns sorted by view_count DESC; `st.dataframe` with typed column config.
+Video selectbox below table — populated with titles from filtered view.
+Detail panel: sentiment summary card from latest `youtube_video_summaries` row + flagged comment list.
+Remove checkbox: visible, `disabled=True`, tooltip "Comment deletion coming in Phase 3 Pass 2".
+Ignore checkbox: functional — sets `review_status='ignored'`, `ignored_at=NOW()`; clears cache and reruns.
+All DB reads use `@st.cache_data(ttl=60)`.
+
+### Known issues and carry-forward items (Phase 3 Pass 1)
+
+**Comment deletion not implemented** — Remove checkbox visible but disabled. OAuth setup and `comments.delete` API call deferred to Phase 3 Pass 2.
 
 ---
 
