@@ -381,6 +381,12 @@ def generate_and_save_summary(
         log.error("Summary generation failed for video_id=%d: %s", db_video_id, e)
 
     with conn.cursor() as cur:
+        # Delete any existing row for this video+date before inserting so that
+        # re-runs (e.g. after backfill reclassification) overwrite stale data.
+        cur.execute(
+            "DELETE FROM youtube_video_summaries WHERE video_id = %s AND run_date = %s",
+            (db_video_id, run_date),
+        )
         cur.execute(
             """
             INSERT INTO youtube_video_summaries
@@ -487,6 +493,64 @@ def backfill_unclassified_comments(conn, anthropic_client) -> None:
         time.sleep(0.5)
 
     log.info("Backfill: summaries regenerated for %d videos", len(video_rows))
+
+    # ------------------------------------------------------------------
+    # Phase 2 — correct any existing summary rows that still have all-zero
+    # counts (created before comments were classified).  Reads live counts
+    # directly from youtube_comments and UPDATE the offending rows in place.
+    # ------------------------------------------------------------------
+    log.info("Backfill: scanning for zero-count summary rows to correct")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, video_id
+            FROM youtube_video_summaries
+            WHERE positive_count = 0
+              AND neutral_count  = 0
+              AND negative_count = 0
+              AND flagged_count  = 0
+            """
+        )
+        zero_summaries = cur.fetchall()
+
+    if not zero_summaries:
+        log.info("Backfill: no zero-count summary rows — nothing to correct")
+        return
+
+    log.info(
+        "Backfill: %d zero-count summary rows found — recalculating from live comments",
+        len(zero_summaries),
+    )
+
+    with conn.cursor() as cur:
+        for summary_id, video_id in zero_summaries:
+            cur.execute(
+                "SELECT sentiment, is_offensive FROM youtube_comments WHERE video_id = %s",
+                (video_id,),
+            )
+            crows = cur.fetchall()
+            if not crows:
+                continue
+            total_c    = len(crows)
+            positive_c = sum(1 for r in crows if r[0] == "positive")
+            neutral_c  = sum(1 for r in crows if r[0] == "neutral")
+            negative_c = sum(1 for r in crows if r[0] == "negative")
+            flagged_c  = sum(1 for r in crows if r[1])
+            cur.execute(
+                """
+                UPDATE youtube_video_summaries
+                SET total_comments = %s,
+                    positive_count = %s,
+                    neutral_count  = %s,
+                    negative_count = %s,
+                    flagged_count  = %s
+                WHERE id = %s
+                """,
+                (total_c, positive_c, neutral_c, negative_c, flagged_c, summary_id),
+            )
+
+    conn.commit()
+    log.info("Backfill: corrected counts for %d summary rows", len(zero_summaries))
 
 
 # ---------------------------------------------------------------------------
