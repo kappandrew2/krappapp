@@ -164,7 +164,7 @@ OAuth credential file generated.
 Comment deletion via API tested.
 
 ### Streamlit — YouTube tab
-**Status:** COMPLETE (Pass 1)
+**Status:** COMPLETE
 
 `app/streamlit/tabs/youtube_tab.py` wired into `main.py`.
 Summary bar: 3 metrics (total videos, pending flagged comments, last job run from MAX(last_fetched_at)).
@@ -178,7 +178,13 @@ All DB reads use `@st.cache_data(ttl=60)`.
 
 ### Known issues and carry-forward items (Phase 3 Pass 1)
 
-**Comment deletion not implemented** — Remove checkbox visible but disabled. OAuth setup and `comments.delete` API call deferred to Phase 3 Pass 2.
+**Comment deletion not implemented** — Remove checkbox is visible but disabled. Requires OAuth 2.0 credentials tied to the channel owner account. Scheduled for Phase 3 Pass 2.
+
+**Summary zero-count bug fixed** — Summaries were initially generated when all comments had `sentiment = 'unknown'`. Fixed by making summary generation idempotent (delete-then-insert) and adding Phase 2 backfill to correct zero-count rows.
+
+**Anthropic API credits required** — The scheduler container requires a funded Anthropic API account separate from the Claude.ai subscription. Credits are loaded at console.anthropic.com.
+
+**`datetime.utcnow()` deprecation warning** — Harmless warning in scheduler logs. Carry forward to a cleanup pass after all phases are complete.
 
 ---
 
