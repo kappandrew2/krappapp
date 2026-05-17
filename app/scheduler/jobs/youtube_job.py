@@ -395,6 +395,101 @@ def generate_and_save_summary(
 
 
 # ---------------------------------------------------------------------------
+# Backfill — classify any comments saved with sentiment = 'unknown'
+# ---------------------------------------------------------------------------
+
+def backfill_unclassified_comments(conn, anthropic_client) -> None:
+    """Classify comments that were saved with sentiment='unknown' due to a prior
+    API failure. Updates sentiment, is_offensive, and offensive_reason in place.
+    Generates fresh per-video summaries for all affected videos.
+    Safe to call on every job run — returns immediately when nothing to do."""
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, youtube_comment_id, video_id, body_text "
+            "FROM youtube_comments WHERE sentiment = 'unknown' ORDER BY id"
+        )
+        rows = cur.fetchall()
+
+    total = len(rows)
+    if total == 0:
+        log.info("Backfill: no unclassified comments — nothing to do")
+        return
+
+    log.info("Backfill: %d unclassified comments found — starting classification", total)
+
+    comments = [
+        {"youtube_comment_id": row[1], "body_text": row[3] or ""}
+        for row in rows
+    ]
+    # Map comment_id → db video_id so we know which videos to summarise later
+    video_id_by_comment: dict[str, int] = {
+        row[1]: row[2] for row in rows if row[2] is not None
+    }
+    affected_video_ids: set[int] = set()
+
+    for i in range(0, total, 20):
+        batch = comments[i : i + 20]
+        results = _classify_batch(anthropic_client, batch)
+
+        with conn.cursor() as cur:
+            for c in batch:
+                r = results.get(c["youtube_comment_id"], {})
+                sentiment = r.get("sentiment", "unknown")
+                if sentiment == "unknown":
+                    continue  # batch failed — leave row unchanged, retry next run
+                is_offensive = bool(r.get("is_offensive", False))
+                offensive_reason = r.get("offensive_reason") or None
+
+                cur.execute(
+                    """
+                    UPDATE youtube_comments
+                    SET sentiment = %s,
+                        is_offensive = %s,
+                        offensive_reason = %s,
+                        updated_at = NOW()
+                    WHERE youtube_comment_id = %s
+                    """,
+                    (sentiment, is_offensive, offensive_reason, c["youtube_comment_id"]),
+                )
+
+                vid_id = video_id_by_comment.get(c["youtube_comment_id"])
+                if vid_id:
+                    affected_video_ids.add(vid_id)
+
+        conn.commit()
+
+        # Log progress at every 100-comment boundary
+        if i > 0 and i % 100 == 0:
+            log.info("Backfill progress: %d / %d comments processed", i, total)
+
+        time.sleep(0.5)
+
+    log.info(
+        "Backfill: classification complete — %d comments processed, %d videos affected",
+        total, len(affected_video_ids),
+    )
+
+    if not affected_video_ids:
+        return
+
+    # Regenerate per-video summaries for every video that received new classifications
+    run_date = date.today()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, title FROM youtube_videos WHERE id = ANY(%s)",
+            (list(affected_video_ids),),
+        )
+        video_rows = cur.fetchall()
+
+    for db_video_id, title in video_rows:
+        generate_and_save_summary(anthropic_client, conn, db_video_id, title, run_date)
+        time.sleep(0.5)
+
+    log.info("Backfill: summaries regenerated for %d videos", len(video_rows))
+
+
+# ---------------------------------------------------------------------------
 # Main job orchestrator
 # ---------------------------------------------------------------------------
 
@@ -408,6 +503,9 @@ def run_youtube_job() -> None:
     conn = get_connection()
 
     try:
+        # 0. Backfill any comments left unclassified by prior API failures
+        backfill_unclassified_comments(conn, anthropic_client)
+
         # 1. Uploads playlist
         playlist_id = get_uploads_playlist_id(youtube, channel_id)
         log.info("Uploads playlist ID: %s", playlist_id)
