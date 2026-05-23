@@ -2,12 +2,8 @@
 youtube_delete.py — OAuth-authenticated YouTube comment deletion helper.
 
 Loads credentials from /app/credentials/youtube_oauth_token.json, refreshes
-the access token if expired, and deletes the comment via the YouTube Data API v3.
-
-Deletion strategy:
-  1. Try commentThreads().delete() — required for top-level comments.
-  2. On HTTP 400 (processingFailure), fall back to comments().delete() — required
-     for reply comments, which cannot be deleted via commentThreads().
+the access token if expired, and calls comments().delete() via the YouTube
+Data API v3. Requires the youtube.force-ssl scope on the OAuth credential.
 
 Returns True on success, False on any failure (missing file, bad token,
 API error). All failures are logged; none are raised.
@@ -16,8 +12,6 @@ API error). All failures are logged; none are raised.
 import json
 import logging
 import os
-
-from googleapiclient.errors import HttpError
 
 log = logging.getLogger(__name__)
 
@@ -58,10 +52,7 @@ def _build_authed_youtube():
 
 
 def delete_youtube_comment(youtube_comment_id: str) -> bool:
-    """Delete a YouTube comment by its comment ID.
-
-    Tries commentThreads().delete() first (top-level comments). If the API
-    returns HTTP 400, falls back to comments().delete() (reply comments).
+    """Delete a YouTube comment by its comment ID via comments().delete().
 
     Returns True on success, False on any failure.
     Missing token file, expired/invalid credentials, and API errors are all
@@ -69,6 +60,9 @@ def delete_youtube_comment(youtube_comment_id: str) -> bool:
     """
     try:
         youtube = _build_authed_youtube()
+        youtube.comments().delete(id=youtube_comment_id).execute()
+        log.info("Deleted YouTube comment %s", youtube_comment_id)
+        return True
     except FileNotFoundError:
         log.error(
             "OAuth token file not found at %s — run the one-time authorization "
@@ -77,33 +71,5 @@ def delete_youtube_comment(youtube_comment_id: str) -> bool:
         )
         return False
     except Exception as e:
-        log.error("Failed to build authenticated YouTube client: %s", e)
-        return False
-
-    # --- attempt 1: top-level comment via commentThreads().delete() -----------
-    try:
-        youtube.commentThreads().delete(id=youtube_comment_id).execute()
-        log.info("Deleted top-level comment thread %s", youtube_comment_id)
-        return True
-    except HttpError as e:
-        if e.resp.status == 400:
-            log.info(
-                "commentThreads().delete() returned 400 for %s — "
-                "falling back to comments().delete() (reply comment)",
-                youtube_comment_id,
-            )
-        else:
-            log.error(
-                "commentThreads().delete() failed for %s: HTTP %s %s",
-                youtube_comment_id, e.resp.status, e,
-            )
-            return False
-
-    # --- attempt 2: reply comment via comments().delete() ---------------------
-    try:
-        youtube.comments().delete(id=youtube_comment_id).execute()
-        log.info("Deleted reply comment %s", youtube_comment_id)
-        return True
-    except Exception as e:
-        log.error("comments().delete() failed for %s: %s", youtube_comment_id, e)
+        log.error("Failed to delete YouTube comment %s: %s", youtube_comment_id, e)
         return False
