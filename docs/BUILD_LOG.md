@@ -203,6 +203,8 @@ All DB reads use `@st.cache_data(ttl=60)`.
 
 **`datetime.utcnow()` deprecation warning** — Harmless warning in scheduler logs. Carry forward to a cleanup pass after all phases are complete.
 
+**`setModerationStatus` behavior confirmed** — Comments rejected via `setModerationStatus('rejected')` are immediately hidden from public view and do not appear in YouTube Studio moderation queues. This is expected YouTube API behavior. Rejected comments are permanently recorded in the `youtube_comments` table with `review_status = 'removed'` and `removed_at` timestamp. There is no restore path via the API — restoration would require manual action in YouTube Studio if needed.
+
 ---
 
 ## Phase 4 — Email assistant
