@@ -4,6 +4,8 @@ import pandas as pd
 import psycopg2
 import streamlit as st
 
+from utils import youtube_delete
+
 
 # ---------------------------------------------------------------------------
 # DB helpers
@@ -69,6 +71,18 @@ def _fetch_videos() -> pd.DataFrame:
             FROM youtube_comments
             WHERE is_offensive = TRUE AND review_status = 'pending'
             GROUP BY video_id
+        ),
+        removed_counts AS (
+            SELECT video_id, COUNT(*) AS removed_count
+            FROM youtube_comments
+            WHERE review_status = 'removed'
+            GROUP BY video_id
+        ),
+        ignored_counts AS (
+            SELECT video_id, COUNT(*) AS ignored_count
+            FROM youtube_comments
+            WHERE review_status = 'ignored'
+            GROUP BY video_id
         )
         SELECT
             v.id,
@@ -84,10 +98,14 @@ def _fetch_videos() -> pd.DataFrame:
                     0
                 ), 1
             ) AS sentiment_pct,
-            COALESCE(fc.pending_flagged, 0) AS pending_flagged
+            COALESCE(fc.pending_flagged, 0) AS pending_flagged,
+            COALESCE(rc.removed_count, 0)   AS removed_count,
+            COALESCE(ic.ignored_count, 0)   AS ignored_count
         FROM youtube_videos v
         LEFT JOIN latest_summaries ls ON ls.video_id = v.id
         LEFT JOIN flagged_counts fc ON fc.video_id = v.id
+        LEFT JOIN removed_counts rc ON rc.video_id = v.id
+        LEFT JOIN ignored_counts ic ON ic.video_id = v.id
         ORDER BY v.view_count DESC
         """
     )
@@ -150,6 +168,17 @@ def _mark_ignored(youtube_comment_id: str) -> None:
     )
 
 
+def _mark_removed(youtube_comment_id: str) -> None:
+    _execute(
+        """
+        UPDATE youtube_comments
+        SET review_status = 'removed', removed_at = NOW(), updated_at = NOW()
+        WHERE youtube_comment_id = %s
+        """,
+        (youtube_comment_id,),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Sub-renderers
 # ---------------------------------------------------------------------------
@@ -199,12 +228,16 @@ def _render_video_detail(video_row) -> None:
             col_date.write(str(pub)[:10] if pub else "")
 
             with col_remove:
-                st.checkbox(
-                    "Remove",
-                    disabled=True,
-                    key=f"remove_{comment['id']}",
-                    help="Comment deletion coming in Phase 3 Pass 2",
-                )
+                if st.checkbox("Remove", key=f"remove_{comment['id']}"):
+                    cid = str(comment["youtube_comment_id"])
+                    if youtube_delete.delete_youtube_comment(cid):
+                        _mark_removed(cid)
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error("Failed to delete comment — check logs")
+                        del st.session_state[f"remove_{comment['id']}"]
+                        st.rerun()
             with col_ignore:
                 if st.checkbox("Ignore", key=f"ignore_{comment['id']}"):
                     _mark_ignored(str(comment["youtube_comment_id"]))
@@ -243,13 +276,15 @@ def render() -> None:
 
     # Filter bar
     filter_choice = st.radio(
-        "Show", ["Pending review", "Cleared", "All"], horizontal=True
+        "Show", ["Pending review", "Removed", "Ignored", "All"], horizontal=True
     )
 
     if filter_choice == "Pending review":
         filtered = df[df["pending_flagged"] > 0]
-    elif filter_choice == "Cleared":
-        filtered = df[df["pending_flagged"] == 0]
+    elif filter_choice == "Removed":
+        filtered = df[df["removed_count"] > 0]
+    elif filter_choice == "Ignored":
+        filtered = df[df["ignored_count"] > 0]
     else:
         filtered = df
 

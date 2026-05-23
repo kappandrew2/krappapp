@@ -158,10 +158,12 @@ Quota exceeded: raises `QuotaExceededError`, caught in orchestrator — stops fe
 `app/scheduler/db.py` — DB connection helper for scheduler container.
 
 ### YouTube OAuth (comment deletion)
-**Status:** NOT STARTED — deferred to Phase 3 Pass 2
+**Status:** COMPLETE
 
-OAuth credential file generated.
-Comment deletion via API tested.
+`credentials/youtube_oauth_token.json` loaded by `app/streamlit/utils/youtube_delete.py` via `google.oauth2.credentials.Credentials`.
+Token auto-refreshes on expiry and is written back to disk — no manual renewal needed.
+`delete_youtube_comment(youtube_comment_id)` calls `youtube.comments().delete(id=...)` via the YouTube Data API v3.
+Missing token file, expired credentials, and API errors are all caught and logged; none propagate to the UI as exceptions.
 
 ### Streamlit — YouTube tab
 **Status:** COMPLETE
@@ -176,7 +178,21 @@ Remove checkbox: visible, `disabled=True`, tooltip "Comment deletion coming in P
 Ignore checkbox: functional — sets `review_status='ignored'`, `ignored_at=NOW()`; clears cache and reruns.
 All DB reads use `@st.cache_data(ttl=60)`.
 
-### Known issues and carry-forward items (Phase 3 Pass 1)
+### Phase 3 Pass 2 — YouTube comment deletion
+**Status:** COMPLETE
+
+`app/streamlit/utils/youtube_delete.py` *(new)* — OAuth delete helper; loads token, refreshes if expired, calls `comments().delete()`.
+`app/streamlit/utils/__init__.py` *(new)* — package marker.
+`app/streamlit/requirements.txt` updated: added `google-api-python-client==2.131.0`, `google-auth==2.29.0`.
+`app/streamlit/tabs/youtube_tab.py` updated:
+- Remove checkbox enabled — calls `youtube_delete.delete_youtube_comment()`, on success sets `review_status='removed'` / `removed_at=NOW()`; on failure shows `st.error` and resets checkbox.
+- `_mark_removed()` DB helper added alongside `_mark_ignored()`.
+- `_fetch_videos()` query extended with `removed_count` and `ignored_count` CTEs.
+- Filter bar updated to full UC2 spec: `Pending review | Removed | Ignored | All` (replaces `Pending review | Cleared | All`).
+`removed_at` column confirmed present in `001_init.sql` — no migration required.
+**Rebuild required:** `docker compose build streamlit && docker compose up -d streamlit` after deploying this commit.
+
+### Known issues and carry-forward items (Phase 3)
 
 **Comment deletion not implemented** — Remove checkbox is visible but disabled. Requires OAuth 2.0 credentials tied to the channel owner account. Scheduled for Phase 3 Pass 2.
 
