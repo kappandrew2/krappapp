@@ -181,16 +181,17 @@ All DB reads use `@st.cache_data(ttl=60)`.
 ### Phase 3 Pass 2 — YouTube comment deletion
 **Status:** COMPLETE
 
-`app/streamlit/utils/youtube_delete.py` *(new)* — OAuth delete helper; loads token, refreshes if expired, calls `comments().delete()`.
+`app/streamlit/utils/youtube_delete.py` *(new)* — OAuth moderation helper; loads token, refreshes if expired, calls `comments().setModerationStatus(moderationStatus='rejected')` to hide the comment from public view.
 `app/streamlit/utils/__init__.py` *(new)* — package marker.
 `app/streamlit/requirements.txt` updated: added `google-api-python-client==2.131.0`, `google-auth==2.29.0`.
 `app/streamlit/tabs/youtube_tab.py` updated:
-- Remove checkbox enabled — calls `youtube_delete.delete_youtube_comment()`, on success sets `review_status='removed'` / `removed_at=NOW()`; on failure shows `st.error` and resets checkbox.
+- Reject checkbox (formerly Remove) enabled — calls `youtube_delete.delete_youtube_comment()`, on success sets `review_status='removed'` / `removed_at=NOW()`; on failure shows `st.error` and resets checkbox.
 - `_mark_removed()` DB helper added alongside `_mark_ignored()`.
 - `_fetch_videos()` query extended with `removed_count` and `ignored_count` CTEs.
 - Filter bar updated to full UC2 spec: `Pending review | Removed | Ignored | All` (replaces `Pending review | Cleared | All`).
 `removed_at` column confirmed present in `001_init.sql` — no migration required.
 **Rebuild required:** `docker compose build streamlit && docker compose up -d streamlit` after deploying this commit.
+**API note:** `comments().delete()` returns `processingFailure 400` for publicly visible comments — a known YouTube Data API v3 limitation. `comments().setModerationStatus('rejected')` is used instead; it hides the comment from public view, which achieves the same result. Returns HTTP 204 No Content on success (execute() returns None — treated as success).
 
 ### Known issues and carry-forward items (Phase 3)
 

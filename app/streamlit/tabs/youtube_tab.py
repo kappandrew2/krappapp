@@ -228,14 +228,14 @@ def _render_video_detail(video_row) -> None:
             col_date.write(str(pub)[:10] if pub else "")
 
             with col_remove:
-                if st.checkbox("Remove", key=f"remove_{comment['id']}"):
+                if st.checkbox("Reject", key=f"remove_{comment['id']}"):
                     cid = str(comment["youtube_comment_id"])
                     if youtube_delete.delete_youtube_comment(cid):
                         _mark_removed(cid)
                         st.cache_data.clear()
                         st.rerun()
                     else:
-                        st.error("Failed to delete comment — check logs")
+                        st.error("Failed to reject comment — check logs")
                         del st.session_state[f"remove_{comment['id']}"]
                         st.rerun()
             with col_ignore:

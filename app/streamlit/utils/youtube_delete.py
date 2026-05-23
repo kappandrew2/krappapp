@@ -1,9 +1,14 @@
 """
-youtube_delete.py — OAuth-authenticated YouTube comment deletion helper.
+youtube_delete.py — OAuth-authenticated YouTube comment moderation helper.
 
 Loads credentials from /app/credentials/youtube_oauth_token.json, refreshes
-the access token if expired, and calls comments().delete() via the YouTube
-Data API v3. Requires the youtube.force-ssl scope on the OAuth credential.
+the access token if expired, and calls comments().setModerationStatus() via
+the YouTube Data API v3 to hide a comment from public view.
+
+Note: comments().delete() returns processingFailure 400 for publicly visible
+comments — a known YouTube API limitation. setModerationStatus('rejected')
+achieves the same result (comment hidden from public view) and works reliably.
+Requires the youtube.force-ssl scope on the OAuth credential.
 
 Returns True on success, False on any failure (missing file, bad token,
 API error). All failures are logged; none are raised.
@@ -52,7 +57,15 @@ def _build_authed_youtube():
 
 
 def delete_youtube_comment(youtube_comment_id: str) -> bool:
-    """Delete a YouTube comment by its comment ID via comments().delete().
+    """Hide a YouTube comment from public view via setModerationStatus('rejected').
+
+    comments().delete() returns processingFailure 400 for publicly visible
+    comments (known API limitation). setModerationStatus achieves the same
+    outcome — the comment is hidden — and works reliably with the
+    youtube.force-ssl scope.
+
+    setModerationStatus returns HTTP 204 No Content on success, so execute()
+    returns None; None is treated as success here.
 
     Returns True on success, False on any failure.
     Missing token file, expired/invalid credentials, and API errors are all
@@ -60,16 +73,19 @@ def delete_youtube_comment(youtube_comment_id: str) -> bool:
     """
     try:
         youtube = _build_authed_youtube()
-        youtube.comments().delete(id=youtube_comment_id).execute()
-        log.info("Deleted YouTube comment %s", youtube_comment_id)
+        youtube.comments().setModerationStatus(
+            id=youtube_comment_id,
+            moderationStatus="rejected",
+        ).execute()
+        log.info("Rejected (hidden) YouTube comment %s", youtube_comment_id)
         return True
     except FileNotFoundError:
         log.error(
             "OAuth token file not found at %s — run the one-time authorization "
-            "flow to generate it before using comment deletion",
+            "flow to generate it before using comment moderation",
             TOKEN_PATH,
         )
         return False
     except Exception as e:
-        log.error("Failed to delete YouTube comment %s: %s", youtube_comment_id, e)
+        log.error("Failed to reject YouTube comment %s: %s", youtube_comment_id, e)
         return False
