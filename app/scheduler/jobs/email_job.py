@@ -44,6 +44,8 @@ ACCOUNTS = [
         "token_path": os.environ.get(
             "GMAIL_EBAY_TOKEN_PATH", "/app/credentials/gmail_ebay_token.json"
         ),
+        # Only fetch emails tagged with the eBayMessages Gmail label
+        "gmail_query": "label:eBayMessages is:unread",
     },
     {
         "label": "youtube",
@@ -51,6 +53,7 @@ ACCOUNTS = [
         "token_path": os.environ.get(
             "GMAIL_YOUTUBE_TOKEN_PATH", "/app/credentials/gmail_youtube_token.json"
         ),
+        "gmail_query": "is:unread",
     },
 ]
 
@@ -396,13 +399,15 @@ def _process_account(
     label = account["label"]
     inserted = 0
 
-    # Fetch unread message IDs
+    # Fetch unread message IDs using the per-account Gmail query
+    gmail_query = account.get("gmail_query", "is:unread")
+    log.info("[%s] Fetching messages with query: %s", label, gmail_query)
     try:
         result = gmail.users().messages().list(
-            userId="me", q="is:unread", maxResults=50
+            userId="me", q=gmail_query, maxResults=50
         ).execute()
     except Exception as e:
-        log.error("[%s] Failed to list unread messages: %s", label, e)
+        log.error("[%s] Failed to list messages: %s", label, e)
         return 0
 
     messages = result.get("messages", [])
