@@ -43,6 +43,8 @@ services:
       - POSTGRES_HOST=postgres
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - EBAY_IMPORT_FOLDER=/app/imports
+      - GMAIL_EBAY_TOKEN_PATH=${GMAIL_EBAY_TOKEN_PATH}
+      - GMAIL_YOUTUBE_TOKEN_PATH=${GMAIL_YOUTUBE_TOKEN_PATH}
     volumes:
       - ./data/imports:/app/imports
       - ./credentials:/app/credentials
@@ -66,6 +68,10 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - YOUTUBE_API_KEY=${YOUTUBE_API_KEY}
       - YOUTUBE_CHANNEL_ID=${YOUTUBE_CHANNEL_ID}
+      - GMAIL_EBAY_TOKEN_PATH=${GMAIL_EBAY_TOKEN_PATH}
+      - GMAIL_YOUTUBE_TOKEN_PATH=${GMAIL_YOUTUBE_TOKEN_PATH}
+    volumes:
+      - ./credentials:/app/credentials
     depends_on:
       postgres:
         condition: service_healthy

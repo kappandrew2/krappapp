@@ -4,6 +4,7 @@ from datetime import datetime
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from jobs.email_job import run_email_job
 from jobs.youtube_job import run_youtube_job
 
 logging.basicConfig(
@@ -25,6 +26,16 @@ scheduler.add_job(
 )
 
 log.info("YouTube monitor job registered — runs every 6 hours, first run starting now")
+
+scheduler.add_job(
+    run_email_job,
+    IntervalTrigger(hours=6),
+    id="email_assistant",
+    name="Email assistant",
+    next_run_time=datetime.utcnow(),  # fire immediately on startup, then every 6h
+)
+
+log.info("Email assistant job registered — runs every 6 hours, first run starting now")
 
 try:
     scheduler.start()

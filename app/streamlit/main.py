@@ -1,7 +1,7 @@
 import os
 import streamlit as st
 import psycopg2
-from tabs import ebay_tab, youtube_tab
+from tabs import ebay_tab, email_tab, youtube_tab
 
 st.set_page_config(page_title="eBay / YouTube Assistant", layout="wide")
 
@@ -37,8 +37,7 @@ tab_email, tab_youtube, tab_ebay, tab_strategy, tab_chatter = st.tabs([
 ])
 
 with tab_email:
-    st.header("Email assistant")
-    st.info("Gmail inbox management and AI-assisted draft responses. Coming in Phase 4.")
+    email_tab.render()
 
 with tab_youtube:
     youtube_tab.render()

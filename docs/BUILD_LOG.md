@@ -209,43 +209,71 @@ All DB reads use `@st.cache_data(ttl=60)`.
 
 ## Phase 4 — Email assistant
 
-### Gmail OAuth setup
-**Status:** NOT STARTED
+### QA pairs seed
+**Status:** COMPLETE
 
-Two OAuth credential files generated (eBay account, YouTube account).
-Token refresh working.
-Read email scopes confirmed.
-Send email scopes confirmed.
+`app/scheduler/scripts/seed_qa_pairs.py` — seeds 10 QA pairs covering: shipping timeframes, item condition, return policy, combined shipping, testing/functionality, parts vs complete units, international shipping, payment methods, best offer handling, local pickup.
+Idempotent: `ON CONFLICT DO NOTHING` — safe to run multiple times.
+Run: `docker exec -it app_scheduler python scripts/seed_qa_pairs.py`
+
+### Gmail OAuth setup
+**Status:** COMPLETE
+
+Credential files confirmed at `/app/credentials/`:
+- `gmail_ebay_token.json` — kappandrew@gmail.com (eBay account)
+- `gmail_youtube_token.json` — andysaudiokrapp@gmail.com (YouTube account)
+Token auto-refreshes on expiry; refreshed token is written back to disk.
+Scopes: `gmail.readonly`, `gmail.send`, `gmail.modify`.
+`docker-compose.yml` updated: scheduler and streamlit services now receive `GMAIL_EBAY_TOKEN_PATH` and `GMAIL_YOUTUBE_TOKEN_PATH` env vars.
+`docker-compose.yml` updated: scheduler service now has `./credentials:/app/credentials` volume mount.
 
 ### Email fetch and deduplication
-**Status:** NOT STARTED
+**Status:** COMPLETE
 
-Both accounts fetched.
-Deduplication against gmail_message_id working.
-is_reply detection working.
+`app/scheduler/jobs/email_job.py` — `run_email_job()` orchestrates full pipeline.
+Fetches unread emails via `gmail.users().messages().list(q="is:unread")`.
+Deduplicates against `gmail_message_id` in the `emails` table.
+`is_reply` detected via presence of `In-Reply-To` header.
+Email body extracted from MIME parts: prefers `text/plain`, falls back to stripped `text/html`.
+After processing, marks each Gmail message as read via `messages().modify(removeLabelIds=["UNREAD"])`.
+`email_accounts` table auto-seeded on first run if empty — inserts both accounts with correct labels.
 
 ### AI classification and draft generation
-**Status:** NOT STARTED
+**Status:** COMPLETE
 
-QA pairs seeded from Excel.
-Classification prompt working, returns correct JSON.
-High priority detection working.
-Draft generation prompt working.
+Classification: single Claude call per email returning `{type, priority, reasoning}`.
+Types: `shipping_inquiry`, `item_specs`, `availability`, `offer_negotiation`, `return_request`, `collaboration`, `content_question`, `spam`, `general`.
+Priority: `high` for `return_request` and negative-sentiment emails; `normal` for all others.
+Draft generation: single Claude call per email; QA pairs passed as context; returns plain text.
+Both calls fall back gracefully on API failure: classification → `('general', 'normal')`; draft → `''`.
 
 ### Twilio SMS
-**Status:** NOT STARTED
+**Status:** COMPLETE (stub)
 
-SMS sends for high priority emails.
-Message format confirmed.
+`send_sms_alert(message)` in `email_job.py` logs `[SMS STUB] Would send: {message}`.
+US A2P 10DLC registration pending — function signature is final, body will be replaced with Twilio call when registration completes. No other code changes required.
 
 ### Streamlit — Email tab
-**Status:** NOT STARTED
+**Status:** COMPLETE
 
-Grid rendering with all columns.
-Filter toggle working.
-Inline draft editing working.
-Approve button triggers send.
-Override checkbox working.
+`app/streamlit/tabs/email_tab.py` wired into `main.py`.
+`app/streamlit/utils/gmail_send.py` *(new)* — OAuth send helper, loads correct token by account label, constructs MIME reply, sends via Gmail API.
+Summary bar: 3 metrics (new emails, high priority new, most recent email timestamp).
+Filter bar: `New | Replied | Overridden | All` — default `New`.
+Per-email card: date, account badge (📦 eBay / ▶️ YouTube), from, email type, classification, priority badge (🔴 HIGH / ⚪ normal), subject.
+Full body in collapsible expander.
+Inline draft editing via `st.text_area` pre-filled with `ai_draft`.
+Approve button: disabled when draft is empty; on click sends via Gmail, marks status `sent`.
+Override checkbox: marks status `overridden`.
+All DB reads use `@st.cache_data(ttl=60)`.
+
+### Known issues and carry-forward items (Phase 4)
+
+**Twilio SMS is stubbed** — `send_sms_alert()` logs to console only. Will be wired to real Twilio API when US A2P 10DLC registration completes. No code changes needed beyond the function body.
+
+**Scheduler and Streamlit containers require rebuild** — `docker-compose.yml` changes (credentials volume, Gmail env vars) take effect with: `docker compose up -d --force-recreate scheduler streamlit`
+
+**QA pairs seed is manual** — Run once after scheduler container is up: `docker exec -it app_scheduler python scripts/seed_qa_pairs.py`
 
 ---
 
