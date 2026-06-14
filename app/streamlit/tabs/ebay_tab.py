@@ -130,6 +130,65 @@ def _fetch_all_items_for_sellthrough() -> pd.DataFrame:
     )
 
 
+@st.cache_data(ttl=60)
+def _fetch_sold_years() -> list:
+    df = _query(
+        "SELECT DISTINCT EXTRACT(YEAR FROM sold_date)::int AS yr "
+        "FROM ebay_items WHERE status = 'sold' AND sold_date IS NOT NULL "
+        "ORDER BY yr DESC"
+    )
+    return df["yr"].tolist() if not df.empty else []
+
+
+@st.cache_data(ttl=60)
+def _fetch_annual_summary(year: int) -> dict:
+    df = _query(
+        """
+        SELECT
+            COUNT(*) AS items_sold,
+            COALESCE(SUM(sold_price), 0) AS gross_sales,
+            COALESCE(SUM(
+                CAST(NULLIF(REPLACE(raw_data->>'shipping_and_handling', '$', ''), '') AS NUMERIC)
+            ), 0) AS shipping_total,
+            COALESCE(SUM(
+                CAST(NULLIF(REPLACE(raw_data->>'ebay_collected_tax', '$', ''), '') AS NUMERIC)
+            ), 0) AS ebay_tax,
+            COALESCE(SUM(
+                CAST(NULLIF(REPLACE(raw_data->>'seller_collected_tax', '$', ''), '') AS NUMERIC)
+            ), 0) AS seller_tax,
+            COALESCE(SUM(
+                CAST(NULLIF(REPLACE(raw_data->>'ebay_collected_charges', '$', ''), '') AS NUMERIC)
+            ), 0) AS ebay_fees
+        FROM ebay_items
+        WHERE status = 'sold'
+          AND sold_date IS NOT NULL
+          AND EXTRACT(YEAR FROM sold_date) = %s
+        """,
+        (year,),
+    )
+    if df.empty:
+        return {}
+    row = df.iloc[0]
+    gross = float(row["gross_sales"])
+    shipping = float(row["shipping_total"])
+    ebay_tax = float(row["ebay_tax"])
+    seller_tax = float(row["seller_tax"])
+    ebay_fees = float(row["ebay_fees"])
+    total_tax = ebay_tax + seller_tax
+    total_deductions = shipping + total_tax + ebay_fees
+    return {
+        "items_sold": int(row["items_sold"]),
+        "gross_sales": gross,
+        "shipping_total": shipping,
+        "ebay_tax": ebay_tax,
+        "seller_tax": seller_tax,
+        "total_tax": total_tax,
+        "ebay_fees": ebay_fees,
+        "total_deductions": total_deductions,
+        "net_revenue": gross - total_deductions,
+    }
+
+
 # ---------------------------------------------------------------------------
 # In-memory computation helpers (not cached — operate on DataFrames)
 # ---------------------------------------------------------------------------
@@ -361,3 +420,44 @@ def render():
             )
             fig2.update_layout(xaxis_tickangle=-45)
             st.plotly_chart(fig2, use_container_width=True)
+
+    # -----------------------------------------------------------------------
+    # Section 3 — Annual sales summary
+    # -----------------------------------------------------------------------
+    st.divider()
+    st.subheader("Annual sales summary")
+
+    years = _fetch_sold_years()
+    if not years:
+        st.info("No sold items with sold_date available yet.")
+    else:
+        current_year = datetime.date.today().year
+        default_idx = years.index(current_year) if current_year in years else 0
+        selected_year = st.selectbox(
+            "Year", options=years, index=default_idx, key="annual_year"
+        )
+
+        m = _fetch_annual_summary(selected_year)
+        if not m:
+            st.info(f"No data for {selected_year}.")
+        else:
+            def _fmt(val: float) -> str:
+                return f"${val:,.2f}"
+
+            # Row 1 — four gross components
+            r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+            r1c1.metric("Gross sales", _fmt(m["gross_sales"]))
+            r1c2.metric("Shipping collected", _fmt(m["shipping_total"]))
+            r1c3.metric("Taxes collected", _fmt(m["total_tax"]))
+            r1c4.metric("eBay fees", _fmt(m["ebay_fees"]))
+
+            # Row 2 — summary / net
+            r2c1, r2c2, r2c3 = st.columns(3)
+            r2c1.metric("Total deductions", _fmt(m["total_deductions"]))
+            r2c2.metric(
+                "Net revenue",
+                _fmt(m["net_revenue"]),
+                delta=f"-{_fmt(m['total_deductions'])}",
+                delta_color="inverse",
+            )
+            r2c3.metric("Items sold", m["items_sold"])
