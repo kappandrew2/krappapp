@@ -25,6 +25,7 @@ import time
 from datetime import datetime, timezone
 
 import anthropic as anthropic_sdk
+from bs4 import BeautifulSoup
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -192,16 +193,19 @@ def _decode_part(data: str) -> str:
     return base64.b64decode(padded).decode("utf-8", errors="replace")
 
 
-def _strip_html(html: str) -> str:
-    """Strip HTML tags, collapse whitespace."""
-    text = re.sub(r"<[^>]+>", " ", html)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+def _clean_body(text: str) -> str:
+    """Strip HTML/CSS via BeautifulSoup, collapse whitespace, strip edges."""
+    soup = BeautifulSoup(text, "html.parser")
+    for tag in soup(["style", "script"]):
+        tag.decompose()
+    cleaned = soup.get_text(separator=" ")
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip()
 
 
 def _extract_body(payload: dict) -> str:
-    """Recursively extract the best text body from a Gmail message payload.
-    Prefers text/plain; falls back to stripped text/html."""
+    """Recursively extract the best raw text body from a Gmail message payload.
+    Prefers text/plain; falls back to text/html. Caller is responsible for cleaning."""
     mime_type = payload.get("mimeType", "")
     body_data = payload.get("body", {}).get("data", "")
 
@@ -209,7 +213,7 @@ def _extract_body(payload: dict) -> str:
         return _decode_part(body_data)
 
     if mime_type == "text/html" and body_data:
-        return _strip_html(_decode_part(body_data))
+        return _decode_part(body_data)
 
     # Multipart — recurse into parts, prefer plain
     parts = payload.get("parts", [])
@@ -449,8 +453,10 @@ def _process_account(
             internal_date_ms / 1000, tz=timezone.utc
         ) if internal_date_ms else None
 
-        # Extract body
-        body_text = _extract_body(msg.get("payload", {}))
+        # Extract and clean body; truncate separately for AI calls
+        raw_body = _extract_body(msg.get("payload", {}))
+        body_text = _clean_body(raw_body)
+        body_for_ai = body_text[:2000]
 
         # Skip empty or spam-like messages with no body
         if not from_address:
@@ -458,9 +464,9 @@ def _process_account(
             _mark_read(gmail, gmail_message_id, label)
             continue
 
-        # AI classify
+        # AI classify (truncated body only)
         classification, priority = _classify_email(
-            anthropic_client, from_address, subject, body_text, qa_context
+            anthropic_client, from_address, subject, body_for_ai, qa_context
         )
 
         # SMS alert for high priority
@@ -470,12 +476,12 @@ def _process_account(
             )
             send_sms_alert(sms_message)
 
-        # AI draft
+        # AI draft (truncated body only)
         ai_draft = _generate_draft(
-            anthropic_client, from_address, subject, body_text, classification, qa_context
+            anthropic_client, from_address, subject, body_for_ai, classification, qa_context
         )
 
-        # Save to DB
+        # Save to DB — store full cleaned body, not truncated
         record = {
             "account_id": account_db_id,
             "gmail_message_id": gmail_message_id,
