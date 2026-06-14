@@ -276,7 +276,7 @@ def render() -> None:
 
     # Filter bar
     filter_choice = st.radio(
-        "Show", ["Pending review", "Removed", "Ignored", "All"], horizontal=True
+        "Show", ["Pending review", "Removed", "Ignored", "Explore All"], horizontal=True
     )
 
     if filter_choice == "Pending review":
