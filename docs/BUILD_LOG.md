@@ -120,6 +120,8 @@ ALTER TABLE ebay_items ADD COLUMN IF NOT EXISTS sold_quantity INTEGER, ADD COLUM
 
 **Sold items missing listing dates on first load** — sold items that were no longer active at the time of the first export have null `listing_date` and `age_in_days`. This is a timing artifact of the initial load and will self-correct as weekly loads are added over time. No code change required.
 
+**Annual sales summary — incomplete financial data** — The current report accurately shows gross sales and taxes collected. Shipping costs paid by the seller and eBay fees are not available in the orders export — they require separate eBay financial reports. The `shipping_and_handling` field in the orders export reflects buyer-paid shipping (usually $0 for free shipping listings). eBay seller fees come from the eBay Seller Hub financial report (a separate CSV export). This report needs to be ingested and joined to complete the full P&L summary. Carry forward to a future enhancement.
+
 ---
 
 ## Phase 3 — YouTube comment monitor (Pass 1)
