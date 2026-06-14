@@ -1,6 +1,6 @@
+import datetime
 import os
 import re
-from collections import Counter
 
 import pandas as pd
 import plotly.express as px
@@ -33,6 +33,10 @@ STOP_WORDS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# DB helpers
+# ---------------------------------------------------------------------------
+
 def _conn():
     return psycopg2.connect(
         host=os.environ["POSTGRES_HOST"],
@@ -63,6 +67,10 @@ def _scalar(sql: str, params=None):
     finally:
         conn.close()
 
+
+# ---------------------------------------------------------------------------
+# Cached data fetchers
+# ---------------------------------------------------------------------------
 
 @st.cache_data(ttl=60)
 def _fetch_items(status_filter: str) -> pd.DataFrame:
@@ -103,33 +111,76 @@ def _fetch_sold_date_range() -> tuple:
 
 
 @st.cache_data(ttl=60)
-def _fetch_titles_for_words(status_filter: str, date_from: str | None, date_to: str | None) -> pd.DataFrame:
-    queries = []
-    params = []
-    if status_filter in ("Sold", "Both"):
-        if date_from and date_to:
-            queries.append(
-                "SELECT title FROM ebay_items "
-                "WHERE status = 'sold' AND sold_date BETWEEN %s AND %s"
-            )
-            params.extend([date_from, date_to])
-        else:
-            queries.append("SELECT title FROM ebay_items WHERE status = 'sold'")
-    if status_filter in ("Active", "Both"):
-        queries.append("SELECT title FROM ebay_items WHERE status = 'active'")
-    if not queries:
-        return pd.DataFrame(columns=["title"])
-    sql = " UNION ALL ".join(queries)
-    return _query(sql, params or None)
+def _fetch_sold_with_price(date_from, date_to) -> pd.DataFrame:
+    if date_from and date_to:
+        return _query(
+            "SELECT title, sold_price FROM ebay_items "
+            "WHERE status = 'sold' AND sold_date BETWEEN %s AND %s AND sold_price IS NOT NULL",
+            (date_from, date_to),
+        )
+    return _query(
+        "SELECT title, sold_price FROM ebay_items WHERE status = 'sold' AND sold_price IS NOT NULL"
+    )
 
 
-def _count_words(titles_df: pd.DataFrame) -> Counter:
-    counter: Counter = Counter()
-    for title in titles_df["title"].dropna():
-        words = re.findall(r"[a-z]+", str(title).lower())
-        counter.update(w for w in words if w not in STOP_WORDS and len(w) > 1)
-    return counter
+@st.cache_data(ttl=60)
+def _fetch_all_items_for_sellthrough() -> pd.DataFrame:
+    return _query(
+        "SELECT title, status FROM ebay_items WHERE status IN ('active', 'sold')"
+    )
 
+
+# ---------------------------------------------------------------------------
+# In-memory computation helpers (not cached — operate on DataFrames)
+# ---------------------------------------------------------------------------
+
+def _keywords(title: str):
+    words = set(re.findall(r"[a-z]+", str(title).lower()))
+    return {w for w in words if w not in STOP_WORDS and len(w) > 1}
+
+
+def _revenue_by_keyword(df: pd.DataFrame) -> pd.DataFrame:
+    revenue: dict = {}
+    for _, row in df.iterrows():
+        price = float(row["sold_price"]) if pd.notna(row["sold_price"]) else 0.0
+        for w in _keywords(row["title"]):
+            revenue[w] = revenue.get(w, 0.0) + price
+    return pd.DataFrame(
+        sorted(revenue.items(), key=lambda x: -x[1]),
+        columns=["keyword", "revenue"],
+    )
+
+
+def _sellthrough_by_keyword(df: pd.DataFrame) -> pd.DataFrame:
+    active: dict = {}
+    sold: dict = {}
+    for _, row in df.iterrows():
+        target = active if row["status"] == "active" else sold
+        for w in _keywords(row["title"]):
+            target[w] = target.get(w, 0) + 1
+    all_words = set(active) | set(sold)
+    rows = []
+    for w in all_words:
+        a = active.get(w, 0)
+        s = sold.get(w, 0)
+        total = a + s
+        rows.append({
+            "keyword": w,
+            "active_count": a,
+            "sold_count": s,
+            "total_count": total,
+            "sell_through_pct": s / total * 100 if total > 0 else 0.0,
+        })
+    return (
+        pd.DataFrame(rows)
+        .sort_values("total_count", ascending=False)
+        .reset_index(drop=True)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Main render
+# ---------------------------------------------------------------------------
 
 def render():
     st.header("eBay inventory")
@@ -187,27 +238,22 @@ def render():
         hide_index=True,
     )
 
+    # -----------------------------------------------------------------------
+    # Section 1 — Revenue by keyword
+    # -----------------------------------------------------------------------
     st.divider()
-
-    # Word frequency section
-    st.subheader("Title word frequency")
-
-    word_status = st.radio("Items", ["Sold", "Active", "Both"], horizontal=True, key="word_status")
+    st.subheader("Revenue by keyword")
 
     min_date_str, max_date_str = _fetch_sold_date_range()
+    date_from_str = min_date_str
+    date_to_str = max_date_str
 
-    date_from_str: str | None = min_date_str
-    date_to_str: str | None = max_date_str
-
-    if word_status in ("Sold", "Both"):
-        if min_date_str is None:
-            st.info("No sold items with sold_date available yet.")
-            if word_status == "Sold":
-                return
-        elif min_date_str == max_date_str:
-            st.info(f"Sold date: {min_date_str}")
+    if min_date_str is None:
+        st.info("No sold items with sold_date available yet.")
+    else:
+        if min_date_str == max_date_str:
+            st.caption(f"Sold date: {min_date_str}")
         else:
-            import datetime
             min_d = datetime.date.fromisoformat(min_date_str)
             max_d = datetime.date.fromisoformat(max_date_str)
             sel_from, sel_to = st.slider(
@@ -215,31 +261,103 @@ def render():
                 min_value=min_d,
                 max_value=max_d,
                 value=(min_d, max_d),
+                key="revenue_date_slider",
             )
             date_from_str = sel_from.isoformat()
             date_to_str = sel_to.isoformat()
 
-    titles_df = _fetch_titles_for_words(word_status, date_from_str, date_to_str)
+        rev_limit = st.radio(
+            "Show", ["Top 20", "All keywords"], horizontal=True, key="rev_limit"
+        )
 
-    if titles_df.empty:
-        st.info("No items match the selected filters.")
-        return
+        sold_df = _fetch_sold_with_price(date_from_str, date_to_str)
+        if sold_df.empty:
+            st.info("No sold items with prices in the selected date range.")
+        else:
+            rev_df = _revenue_by_keyword(sold_df)
+            if rev_limit == "Top 20":
+                rev_df = rev_df.head(20)
 
-    word_counts = _count_words(titles_df)
+            if rev_df.empty:
+                st.info("No keywords found after filtering stop words.")
+            else:
+                fig = px.bar(
+                    rev_df,
+                    x="revenue",
+                    y="keyword",
+                    orientation="h",
+                    labels={"revenue": "Total Revenue ($)", "keyword": "Keyword"},
+                    title=f"Revenue by keyword — {rev_limit.lower()}",
+                )
+                fig.update_layout(
+                    yaxis={"categoryorder": "total ascending"},
+                    xaxis_tickprefix="$",
+                    xaxis_tickformat=",.0f",
+                )
+                st.plotly_chart(fig, use_container_width=True)
 
-    if not word_counts:
-        st.info("No words found after filtering stop words.")
-        return
+    # -----------------------------------------------------------------------
+    # Section 2 — Sell-through by keyword
+    # -----------------------------------------------------------------------
+    st.divider()
+    st.subheader("Sell-through by keyword")
 
-    top_words = pd.DataFrame(word_counts.most_common(20), columns=["word", "count"])
-
-    fig = px.bar(
-        top_words,
-        x="count",
-        y="word",
-        orientation="h",
-        labels={"count": "Count", "word": "Word"},
-        title="Top 20 words in listing titles",
+    st_limit = st.radio(
+        "Show", ["Top 20", "All keywords"], horizontal=True, key="st_limit"
     )
-    fig.update_layout(yaxis={"categoryorder": "total ascending"})
-    st.plotly_chart(fig, use_container_width=True)
+
+    all_items_df = _fetch_all_items_for_sellthrough()
+
+    if all_items_df.empty:
+        st.info("No items found.")
+    else:
+        st_df = _sellthrough_by_keyword(all_items_df)
+        plot_df = st_df if st_limit == "All keywords" else st_df.head(20)
+
+        if plot_df.empty:
+            st.info("No keywords found after filtering stop words.")
+        else:
+            # Table with colored sell-through %
+            table_df = plot_df[
+                ["keyword", "active_count", "sold_count", "total_count", "sell_through_pct"]
+            ].copy()
+            table_df.columns = ["Keyword", "Listed", "Sold", "Total", "Sell-through %"]
+
+            def _color_st_row(col):
+                styles = []
+                for val in col:
+                    if val >= 60:
+                        styles.append("background-color: #c6efce; color: #276221")
+                    elif val >= 30:
+                        styles.append("background-color: #ffeb9c; color: #9c6500")
+                    else:
+                        styles.append("background-color: #ffc7ce; color: #9c0006")
+                return styles
+
+            styled = (
+                table_df.style
+                .format({"Sell-through %": "{:.1f}%"})
+                .apply(_color_st_row, subset=["Sell-through %"])
+            )
+            st.dataframe(styled, use_container_width=True, hide_index=True)
+
+            # Grouped bar chart — active vs sold count per keyword
+            melted = plot_df[["keyword", "active_count", "sold_count"]].melt(
+                id_vars="keyword", var_name="status", value_name="count"
+            )
+            melted["status"] = melted["status"].map(
+                {"active_count": "Active", "sold_count": "Sold"}
+            )
+
+            fig2 = px.bar(
+                melted,
+                x="keyword",
+                y="count",
+                color="status",
+                barmode="group",
+                labels={"keyword": "Keyword", "count": "Count", "status": "Status"},
+                title=f"Active vs sold count by keyword — {st_limit.lower()}",
+                color_discrete_map={"Active": "#4e79a7", "Sold": "#f28e2b"},
+            )
+            fig2.update_layout(xaxis_tickangle=-45)
+            st.plotly_chart(fig2, use_container_width=True)
