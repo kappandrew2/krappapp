@@ -107,7 +107,10 @@ def validate_and_normalize(df: pd.DataFrame, file_type: str) -> pd.DataFrame:
         ).dt.date
     if "end_date" in df.columns:
         df["end_date"] = pd.to_datetime(
-            df["end_date"], errors="coerce"
+            df["end_date"].astype(str).str.replace(
+                r"\s+(PDT|PST|EDT|EST|CDT|CST|MDT|MST)", "", regex=True
+            ),
+            errors="coerce",
         ).dt.date
     if "sold_date" in df.columns:
         df["sold_date"] = pd.to_datetime(

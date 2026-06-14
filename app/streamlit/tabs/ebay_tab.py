@@ -1,4 +1,6 @@
 import os
+import re
+from collections import Counter
 
 import pandas as pd
 import plotly.express as px
@@ -6,6 +8,29 @@ import psycopg2
 import streamlit as st
 
 IMPORTS_FOLDER = os.environ.get("EBAY_IMPORT_FOLDER", "/app/imports")
+
+STOP_WORDS = {
+    "a", "an", "the", "and", "or", "but", "nor", "so", "yet",
+    "in", "on", "at", "to", "for", "of", "with", "by", "from",
+    "as", "is", "was", "are", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did",
+    "will", "would", "could", "should", "may", "might", "shall", "can",
+    "not", "no", "its", "it", "this", "that", "these", "those",
+    "they", "them", "their", "we", "our", "you", "your",
+    "he", "she", "him", "her", "his", "hers",
+    "who", "which", "what", "when", "where", "why", "how",
+    "all", "any", "both", "each", "if", "up", "out", "about",
+    "into", "through", "during", "before", "after",
+    "above", "below", "between", "over", "under", "again",
+    "too", "very", "just", "than", "then", "also",
+    "new", "old", "used", "good", "great", "nice", "clean",
+    "lot", "set", "kit", "item", "items", "unit", "units",
+    "read", "see", "please", "description", "photos",
+    "shipping", "free", "sale", "ebay", "buy", "sell", "sold",
+    "listing", "listed", "price", "offer", "obo",
+    "vintage", "original", "tested", "works", "working",
+    "parts", "repair", "only", "one", "two", "rare",
+}
 
 
 def _conn():
@@ -67,10 +92,43 @@ def _fetch_summary() -> dict:
 
 
 @st.cache_data(ttl=60)
-def _fetch_word_data() -> pd.DataFrame:
-    return _query(
-        "SELECT word, status, item_count, run_date FROM ebay_title_words ORDER BY run_date, status, item_count DESC"
+def _fetch_sold_date_range() -> tuple:
+    df = _query(
+        "SELECT MIN(sold_date)::text AS min_date, MAX(sold_date)::text AS max_date "
+        "FROM ebay_items WHERE status = 'sold' AND sold_date IS NOT NULL"
     )
+    if df.empty or df.iloc[0]["min_date"] is None:
+        return None, None
+    return df.iloc[0]["min_date"], df.iloc[0]["max_date"]
+
+
+@st.cache_data(ttl=60)
+def _fetch_titles_for_words(status_filter: str, date_from: str | None, date_to: str | None) -> pd.DataFrame:
+    queries = []
+    params = []
+    if status_filter in ("Sold", "Both"):
+        if date_from and date_to:
+            queries.append(
+                "SELECT title FROM ebay_items "
+                "WHERE status = 'sold' AND sold_date BETWEEN %s AND %s"
+            )
+            params.extend([date_from, date_to])
+        else:
+            queries.append("SELECT title FROM ebay_items WHERE status = 'sold'")
+    if status_filter in ("Active", "Both"):
+        queries.append("SELECT title FROM ebay_items WHERE status = 'active'")
+    if not queries:
+        return pd.DataFrame(columns=["title"])
+    sql = " UNION ALL ".join(queries)
+    return _query(sql, params or None)
+
+
+def _count_words(titles_df: pd.DataFrame) -> Counter:
+    counter: Counter = Counter()
+    for title in titles_df["title"].dropna():
+        words = re.findall(r"[a-z]+", str(title).lower())
+        counter.update(w for w in words if w not in STOP_WORDS and len(w) > 1)
+    return counter
 
 
 def render():
@@ -134,52 +192,53 @@ def render():
     # Word frequency section
     st.subheader("Title word frequency")
 
-    word_df = _fetch_word_data()
+    word_status = st.radio("Items", ["Sold", "Active", "Both"], horizontal=True, key="word_status")
 
-    if word_df.empty:
-        st.info("No word data yet. Drop an eBay export into the imports folder to generate it.")
+    min_date_str, max_date_str = _fetch_sold_date_range()
+
+    date_from_str: str | None = min_date_str
+    date_to_str: str | None = max_date_str
+
+    if word_status in ("Sold", "Both"):
+        if min_date_str is None:
+            st.info("No sold items with sold_date available yet.")
+            if word_status == "Sold":
+                return
+        elif min_date_str == max_date_str:
+            st.info(f"Sold date: {min_date_str}")
+        else:
+            import datetime
+            min_d = datetime.date.fromisoformat(min_date_str)
+            max_d = datetime.date.fromisoformat(max_date_str)
+            sel_from, sel_to = st.slider(
+                "Sold date range",
+                min_value=min_d,
+                max_value=max_d,
+                value=(min_d, max_d),
+            )
+            date_from_str = sel_from.isoformat()
+            date_to_str = sel_to.isoformat()
+
+    titles_df = _fetch_titles_for_words(word_status, date_from_str, date_to_str)
+
+    if titles_df.empty:
+        st.info("No items match the selected filters.")
         return
 
-    word_df["run_date"] = pd.to_datetime(word_df["run_date"]).dt.date
-    distinct_dates = sorted(word_df["run_date"].unique())
+    word_counts = _count_words(titles_df)
 
-    word_status = st.radio("Items", ["Active", "Sold", "Both"], horizontal=True, key="word_status")
-
-    if len(distinct_dates) < 2:
-        st.info(f"Word data available for {distinct_dates[0]}. More dates appear after future loads.")
-        filtered = word_df
-    else:
-        start_d, end_d = st.slider(
-            "Date range",
-            min_value=distinct_dates[0],
-            max_value=distinct_dates[-1],
-            value=(distinct_dates[0], distinct_dates[-1]),
-        )
-        filtered = word_df[
-            (word_df["run_date"] >= start_d) & (word_df["run_date"] <= end_d)
-        ]
-
-    if word_status != "Both":
-        filtered = filtered[filtered["status"] == word_status.lower()]
-
-    if filtered.empty:
-        st.info("No word data for the selected filters.")
+    if not word_counts:
+        st.info("No words found after filtering stop words.")
         return
 
-    agg = (
-        filtered.groupby("word")["item_count"]
-        .sum()
-        .reset_index()
-        .sort_values("item_count", ascending=False)
-        .head(20)
-    )
+    top_words = pd.DataFrame(word_counts.most_common(20), columns=["word", "count"])
 
     fig = px.bar(
-        agg,
-        x="item_count",
+        top_words,
+        x="count",
         y="word",
         orientation="h",
-        labels={"item_count": "Count", "word": "Word"},
+        labels={"count": "Count", "word": "Word"},
         title="Top 20 words in listing titles",
     )
     fig.update_layout(yaxis={"categoryorder": "total ascending"})
