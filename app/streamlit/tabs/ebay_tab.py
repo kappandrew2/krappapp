@@ -1,5 +1,4 @@
 import os
-import subprocess
 
 import pandas as pd
 import plotly.express as px
@@ -78,8 +77,11 @@ def render():
     st.header("eBay inventory")
 
     # Folder link
-    if st.button("Open imports folder"):
-        subprocess.run(["open", IMPORTS_FOLDER])
+    st.info(
+        "📁 Drop eBay export files into: ~/krappapp/data/imports/\n\n"
+        "Rename files to include \"active\" or \"sold\" in the filename.\n\n"
+        "File watcher checks every 60 seconds."
+    )
 
     # Summary bar
     s = _fetch_summary()
